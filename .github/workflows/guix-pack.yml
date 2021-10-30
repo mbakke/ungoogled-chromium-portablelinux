@@ -1,0 +1,68 @@
+name: Create portable executable
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '21 5 * * *'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guix cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cache/guix
+          key: guix-cache-${{ github.sha }}
+          restore-keys: |
+            guix-cache-
+      - name: Install Guix
+        uses: PromyLOPH/guix-install-action@v1
+      - name: Assert that binary substitute is available
+        run: guix weather ungoogled-chromium
+      # If a binary substitute is unavailable, Guix attempts to do a local
+      # build, which would time out on the CI.  Simply skip in that case
+      # instead of throwing an error.
+      - name: Skip when substitute is unavailable
+        if: ${{ failure() }}
+        run: echo "No binary substitute available, skipping."
+      - name: Download substitutes
+        run: guix build --no-grafts --fallback ungoogled-chromium
+      - name: Install Recutils
+        run: sudo apt-get -q install recutils
+      - name: Export version
+        run: >
+          echo version=$(guix show ungoogled-chromium | recsel -P version)
+          >> $GITHUB_ENV
+      - name: Create relocatable pack
+        run: >
+          guix pack --fallback -RR
+          -S /bin=bin
+          --save-provenance
+          --root=ungoogled-chromium-${{ env.version }}.tar.gz
+          ungoogled-chromium
+      - name: Create release notes
+        # Ah yes, shell scripting with YAML.  What could go wrong?
+        run: |
+          cat > ${{ runner.temp }}/release_notes.md <<EOF
+          The tarball below is automatically built by [GNU Guix](https://guix.gnu.org) and @github-actions.
+          To use it, run:
+            ```
+            cd /tmp # or anywhere you like
+            tar -xf ~/Downloads/ungoogled-chromium-$version.tar.gz
+            ./bin/chromium
+            ```
+          EOF
+      - name: Upload release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifacts: ungoogled-chromium-${{ env.version }}.tar.gz
+          artifactContentType: application/gzip
+          bodyFile: ${{ runner.temp }}/release_notes.md
+          omitBodyDuringUpdate: false
+          omitName: true
+          omitNameDuringUpdate: true
+          tag: ${{ env.version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
